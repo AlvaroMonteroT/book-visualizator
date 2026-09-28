@@ -1,0 +1,19 @@
+[character_analysis]
+provider = "openai"
+model = "gpt-5.6-luna"
+api_key_env = "OPENAI_API_KEY"
+max_chunk_characters = 40000
+overlap_paragraphs = 1
+# Conservative client-side ceilings; the API project's actual limits may differ.
+max_requests_per_minute = 30
+max_input_tokens_per_minute = 250000
+retry_attempts = 5
+
+[image_generation]
+provider = "openai"
+model = "gpt-image-2"
+api_key_env = "OPENAI_API_KEY"
+size = "1024x1536"
+quality = "high"
+output_format = "png"
+background = "opaque"

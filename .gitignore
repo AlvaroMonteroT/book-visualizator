@@ -1,0 +1,25 @@
+# Secrets and local environment.
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Private books and generated results.
+data/books/
+data/results/
+data/images/
+*.db
+*.sqlite
+*.epub
+
+# Python cache and build files.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# OS/editor files.
+.DS_Store
+.idea/
+.vscode/
