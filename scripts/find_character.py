@@ -433,7 +433,7 @@ class LunaClient:
         except ImportError as error:
             raise RuntimeError("Install the project dependencies with: pip install -r requirements.txt") from error
         # This script owns retries so 429/5xx behavior is bounded and visible.
-        self.client = OpenAI(api_key=api_key, max_retries=0)
+        self.client = OpenAI(api_key=api_key, timeout=180.0, max_retries=0)
 
     def _request_json(
         self, name: str, instructions: str, payload: dict[str, Any], schema: dict[str, Any]

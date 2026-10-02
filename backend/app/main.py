@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import threading
@@ -242,10 +243,18 @@ def _process_index(job_id: str, book_id: str) -> None:
             retry_attempts=settings.retry_attempts,
         )
         _set_job(job_id, status="indexing", progress=5, message="Building the character list…")
+        def report_index_progress(message: str) -> None:
+            progress = 5
+            match = re.search(r"Reading section (\d+)/(\d+)", message)
+            if match:
+                current, total = (int(value) for value in match.groups())
+                progress = min(95, 5 + round(current / max(total, 1) * 90))
+            _set_job(job_id, progress=progress, message=message)
+
         build_character_index(
             BOOKS_ROOT / book_id,
             analyzer,
-            progress_callback=lambda message: _set_job(job_id, message=message),
+            progress_callback=report_index_progress,
         )
         if supabase_is_configured():
             sync_character_index(book_id=book_id, book_dir=BOOKS_ROOT / book_id)
