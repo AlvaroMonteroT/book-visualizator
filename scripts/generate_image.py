@@ -185,6 +185,77 @@ Avoid: illustration, painting, anime, fantasy concept art, plastic skin, beauty 
     return prompt
 
 
+def build_scene_prompt(book_title: str, passage: str, context: str, guidelines: str = "") -> str:
+    """Build a prompt for the event or setting described by a book passage."""
+    prompt = f"""Use case: realistic cinematic scene for a book visualization
+Asset type: context-faithful scene image
+Primary request: Show the event, place, people, creatures, and important objects described in the passage below from the book {book_title}.
+Passage matched from the book: {passage}
+Nearby book context: {context}
+Style/medium: cinematic photorealism, believable human anatomy, natural materials, detailed environment, documentary realism.
+Composition/framing: choose the clearest composition for the described action; show the whole relevant scene and the relationships between subjects, rather than a generic portrait.
+Lighting/mood: follow the atmosphere and time of day supported by the passage and nearby context.
+Constraints: treat the book text as the source of truth; preserve supported setting, action, scale, clothing, creatures, objects, and mood; do not invent named details that are not supported; no text, captions, logos, watermark, frame, or unrelated extra people.
+Avoid: illustration, painting, anime, fantasy concept art, plastic skin, modern objects, generic stock imagery, and unsupported spectacle."""
+    if guidelines:
+        prompt += "\nAdditional visual direction (cannot override the book text):\n" + guidelines
+    if len(prompt) > 32000:
+        raise ValueError("The combined scene prompt exceeds the 32,000-character API limit")
+    return prompt
+
+
+def generate_scene_image(
+    book_title: str,
+    passage: str,
+    context: str,
+    output_root: Path,
+    settings: ImageSettings,
+    client: ImageClient | None = None,
+    extracted_text: str | None = None,
+) -> ImageResult:
+    """Generate and save an image for a matched book passage."""
+    prompt = build_scene_prompt(book_title, passage, context)
+    safe_book = re.sub(r"[^a-z0-9]+", "-", book_title.casefold()).strip("-")[:60] or "book"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    output_dir = output_root / safe_book / "scenes" / stamp
+    suffix = 2
+    while output_dir.exists():
+        output_dir = output_root / safe_book / "scenes" / f"{stamp}-{suffix}"
+        suffix += 1
+    output_dir.mkdir(parents=True, exist_ok=False)
+    image_path = output_dir / f"scene.{settings.output_format}"
+    metadata_path = output_dir / "scene.json"
+    metadata = {
+        "format_version": 1,
+        "status": "requested",
+        "book_title": book_title,
+        "extracted_text": extracted_text,
+        "passage": passage,
+        "context": context,
+        "model": settings.model,
+        "size": settings.size,
+        "quality": settings.quality,
+        "output_format": settings.output_format,
+        "background": settings.background,
+        "prompt": prompt,
+        "image_file": image_path.name,
+    }
+    # Save the complete request before calling the image API. This keeps an
+    # audit trail even when moderation or another API error rejects the image.
+    _write_json(metadata_path, metadata)
+    image_client = client or ImageClient(settings.model, settings.api_key)
+    try:
+        image_bytes, revised_prompt = image_client.generate(
+            prompt, settings.size, settings.quality, settings.output_format, settings.background
+        )
+    except Exception as error:
+        _write_json(metadata_path, {**metadata, "status": "failed", "error": str(error)})
+        raise RuntimeError(f"{error} Prompt saved to {metadata_path}") from error
+    image_path.write_bytes(image_bytes)
+    _write_json(metadata_path, {**metadata, "status": "completed", "revised_prompt": revised_prompt})
+    return ImageResult(image_path=image_path, metadata_path=metadata_path, prompt=prompt)
+
+
 class ImageClient:
     def __init__(self, model: str, api_key: str, client: Any | None = None) -> None:
         self.model = model

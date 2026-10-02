@@ -1,5 +1,49 @@
 # Book Visualizator
 
+Book Visualizator is a local web app for uploading an EPUB, finding a
+character's physical description, generating a portrait, and opening the
+verified source quotes when needed. The existing command-line scripts remain
+available; the FastAPI server now connects them to the browser interface.
+
+## Run the web app
+
+Install the dependencies, make sure `OPENAI_API_KEY` is present in `.env`, and
+start the local server:
+
+```sh
+source .venv/bin/activate
+python -m uvicorn backend.app.main:app --reload
+```
+
+Then open <http://127.0.0.1:8000>. Upload an `.epub`, enter a character, and
+wait for the portrait and description. Source quotes load when you click
+`Show source quotes`.
+
+Once the character index is ready, the character field becomes a list of
+characters found in the book. Selecting a character starts the description and
+portrait workflow immediately.
+
+After a book is uploaded, you can also choose `Visualize a photographed
+passage`. Upload a clear JPG, PNG, or WEBP photo of a paragraph. The app reads
+the visible words, matches them to the already parsed book, gathers nearby
+paragraphs for context, and creates a scene image. The parsed book remains the
+source of truth; the photo is only used to identify the passage.
+
+The third mode, `Ask the book`, lets you ask a question in a chat-like box.
+The app retrieves relevant paragraphs and sends only those excerpts to the
+configured GPT-5.6 Luna analysis model. The answer includes the chapter and
+paragraph references used to support it. If a future workflow needs a visual,
+the image-generation model remains the configured `gpt-image-2` model.
+
+The browser workflow stores uploaded books, parsed text, results, and images
+under `data/`. These files are private local data and are excluded from Git.
+
+When a book is uploaded, the server also builds a reusable character index in
+the background. It reads the book sections once, saves character names and
+appearance evidence, and uses that index for later character requests. The
+index is stored next to the parsed book as `character_index.json` and
+`character_evidence.jsonl`.
+
 The first step of this local proof of concept parses an EPUB and saves its text
 as numbered paragraphs. Later steps can use those paragraph references to
 retrieve exact quotes from the book.
@@ -79,6 +123,19 @@ run stops, rerun the same command with the same book and character query to
 resume completed chunks; changing the book, query, model, or chunk settings
 starts a separate scan.
 
+## Build a character index
+
+To build the reusable all-characters index for an already parsed book, run:
+
+```sh
+python3 scripts/index_characters.py \
+  --book-dir data/books/<book-id>
+```
+
+The book is scanned once in bounded sections. The resulting index keeps the
+character names and exact source paragraphs so descriptions can be created
+later without rereading the entire book for every request.
+
 ## Generate a realistic character image
 
 The image step consumes the completed `description.json` from the character
@@ -112,3 +169,16 @@ the image API.
 ```sh
 python3 -m unittest discover -s tests -v
 ```
+
+## Start in production
+
+Cloud hosts should use the command in `start.sh` (also exposed through the
+`Procfile`). It binds FastAPI to `0.0.0.0` and uses the host-provided `PORT`;
+locally it defaults to port 8000:
+
+```sh
+./start.sh
+```
+
+Set the values from `.env.example` in the hosting provider's private
+environment settings. Do not upload `.env` or any service-role key to GitHub.

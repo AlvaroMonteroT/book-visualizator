@@ -9,6 +9,7 @@ venv/
 data/books/
 data/results/
 data/images/
+data/uploads/
 *.db
 *.sqlite
 *.epub
