@@ -266,7 +266,8 @@ class ImageClient:
             from openai import OpenAI
         except ImportError as error:
             raise RuntimeError("Install the project dependencies with: pip install -r requirements.txt") from error
-        self.client = OpenAI(api_key=api_key)
+        # Never let a hosted worker wait forever on an image request.
+        self.client = OpenAI(api_key=api_key, timeout=180.0, max_retries=0)
 
     def generate(
         self,

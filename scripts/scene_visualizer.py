@@ -73,7 +73,7 @@ class SceneClient:
             from openai import OpenAI
         except ImportError as error:
             raise RuntimeError("Install the project dependencies with: pip install -r requirements.txt") from error
-        self.client = OpenAI(api_key=api_key, max_retries=0)
+        self.client = OpenAI(api_key=api_key, timeout=180.0, max_retries=0)
 
     def extract_text(self, image_bytes: bytes, content_type: str, pacer: RequestPacer | None = None) -> str:
         if not image_bytes:

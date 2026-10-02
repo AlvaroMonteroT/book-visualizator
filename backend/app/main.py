@@ -200,11 +200,13 @@ def _process_character(job_id: str, book_id: str, character: str) -> None:
                 result_record["image_url"] = _image_url(cached_image, book_id=book_id, image_type="portrait", character_name=character)
             else:
                 _set_job(job_id, status="generating_image", progress=70, message="Creating the portrait…")
+                logger.info("Starting portrait image request for book=%s character=%s", book_id, character)
                 image_result = generate_image(
                     description_path,
                     IMAGES_ROOT,
                     load_image_settings(),
                 )
+                logger.info("Portrait image request completed for book=%s character=%s", book_id, character)
                 result_record["image_url"] = _image_url(image_result.image_path, book_id=book_id, image_type="portrait", character_name=character)
 
         results[result_id] = result_record
