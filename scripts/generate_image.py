@@ -53,6 +53,7 @@ class ImageResult:
     image_path: Path
     metadata_path: Path
     prompt: str
+    request_id: str | None = None
 
 
 def _read_guidelines(path: Path | None) -> str:
@@ -253,12 +254,18 @@ def generate_scene_image(
         raise RuntimeError(f"{error} Prompt saved to {metadata_path}") from error
     image_path.write_bytes(image_bytes)
     _write_json(metadata_path, {**metadata, "status": "completed", "revised_prompt": revised_prompt})
-    return ImageResult(image_path=image_path, metadata_path=metadata_path, prompt=prompt)
+    return ImageResult(
+        image_path=image_path,
+        metadata_path=metadata_path,
+        prompt=prompt,
+        request_id=image_client.last_request_id,
+    )
 
 
 class ImageClient:
     def __init__(self, model: str, api_key: str, client: Any | None = None) -> None:
         self.model = model
+        self.last_request_id: str | None = None
         if client is not None:
             self.client = client
             return
@@ -286,7 +293,9 @@ class ImageClient:
                 output_format=output_format,
                 background=background,
             )
+            self.last_request_id = getattr(response, "_request_id", None)
         except Exception as error:
+            self.last_request_id = getattr(error, "request_id", None)
             raise RuntimeError(f"Image generation request failed: {error}") from error
 
         data = getattr(response, "data", None)
@@ -366,7 +375,12 @@ def generate_image(
             "image_file": image_path.name,
         },
     )
-    return ImageResult(image_path=image_path, metadata_path=metadata_path, prompt=prompt)
+    return ImageResult(
+        image_path=image_path,
+        metadata_path=metadata_path,
+        prompt=prompt,
+        request_id=image_client.last_request_id,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

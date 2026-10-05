@@ -183,14 +183,19 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _image_url(image_path: Path, *, book_id: str, image_type: str, character_name: str | None = None) -> str:
+def _image_url(image_path: Path, *, book_id: str, image_type: str, character_name: str | None = None, job_id: str | None = None) -> str:
     local_url = f"/media/{image_path.relative_to(IMAGES_ROOT).as_posix()}"
     if not supabase_is_configured():
         return local_url
+    started = time.monotonic()
+    _log_event("image_upload_started", job_id=job_id, book_id=book_id, image_type=image_type)
     try:
-        return publish_image(book_id=book_id, image_path=image_path, image_type=image_type, character_name=character_name)
+        url = publish_image(book_id=book_id, image_path=image_path, image_type=image_type, character_name=character_name)
+        _log_event("image_upload_completed", job_id=job_id, book_id=book_id, image_type=image_type, duration_seconds=round(time.monotonic() - started, 2))
+        return url
     except Exception:
         logger.exception("Could not publish image %s; using local copy", image_path)
+        _log_event("image_upload_failed", job_id=job_id, book_id=book_id, image_type=image_type, duration_seconds=round(time.monotonic() - started, 2))
         return local_url
 
 
@@ -249,8 +254,8 @@ def _process_character(job_id: str, book_id: str, character: str) -> None:
                     IMAGES_ROOT,
                     load_image_settings(),
                 )
-                logger.info("Portrait image request completed for book=%s character=%s", book_id, character)
-                result_record["image_url"] = _image_url(image_result.image_path, book_id=book_id, image_type="portrait", character_name=character)
+                _log_event("image_request_completed", job_id=job_id, book_id=book_id, image_type="portrait", request_id=image_result.request_id)
+                result_record["image_url"] = _image_url(image_result.image_path, book_id=book_id, image_type="portrait", character_name=character, job_id=job_id)
 
         results[result_id] = result_record
         if supabase_is_configured() and analysis.status == "completed":
@@ -335,6 +340,7 @@ def _process_scene(job_id: str, book_id: str, image_bytes: bytes, content_type: 
             load_image_settings(),
             extracted_text=extracted_text,
         )
+        _log_event("image_request_completed", job_id=job_id, book_id=book_id, image_type="scene", request_id=image_result.request_id)
         result_id = uuid.uuid4().hex
         results[result_id] = {
             "result_id": result_id,
@@ -345,7 +351,7 @@ def _process_scene(job_id: str, book_id: str, image_bytes: bytes, content_type: 
             "matched_paragraph": match.paragraph.as_record(),
             "context": [paragraph.as_record() for paragraph in match.context],
             "match_confidence": round(match.confidence, 3),
-            "image_url": _image_url(image_result.image_path, book_id=book_id, image_type="scene"),
+            "image_url": _image_url(image_result.image_path, book_id=book_id, image_type="scene", job_id=job_id),
         }
         _set_job(job_id, status="completed", progress=100, message="Your scene is ready.", result_id=result_id)
         _log_event("scene_completed", job_id=job_id, book_id=book_id, duration_seconds=round(time.monotonic() - started, 2))
