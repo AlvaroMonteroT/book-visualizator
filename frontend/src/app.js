@@ -28,6 +28,7 @@ const progressBar = document.querySelector('#progress-bar');
 const resultBook = document.querySelector('#result-book');
 const resultCharacter = document.querySelector('#result-character');
 const resultDescription = document.querySelector('#result-description');
+const resultContext = document.querySelector('#result-context');
 const characterImage = document.querySelector('#character-image');
 const quotesButton = document.querySelector('#quotes-button');
 const quotesPanel = document.querySelector('#quotes-panel');
@@ -314,6 +315,13 @@ async function loadResult(resultId) {
   resultBook.textContent = selectedBook.title;
   resultCharacter.textContent = result.character;
   resultDescription.textContent = result.description.physical_description || 'No physical description was found.';
+  if (result.description.book_context) {
+    resultContext.textContent = `Book context: ${result.description.book_context}`;
+    show(resultContext);
+  } else {
+    resultContext.textContent = '';
+    hide(resultContext);
+  }
   hide(sceneSource);
   quotesButton.classList.remove('hidden');
   if (result.image_url) {

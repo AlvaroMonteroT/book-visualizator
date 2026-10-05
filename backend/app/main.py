@@ -458,7 +458,7 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
                     source_sha256=metadata["source_sha256"],
                     source_path=UPLOADS_ROOT / f"{book_id}.epub",
                     book_dir=book_dir,
-                    status="ready" if (book_dir / "character_index.json").is_file() else "indexing",
+                    status="ready" if (book_dir / "character_index.json").is_file() and (book_dir / "book_glossary.json").is_file() else "indexing",
                 )
                 if (book_dir / "character_index.json").is_file():
                     sync_character_index(book_id=book_id, book_dir=book_dir)
@@ -467,7 +467,7 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
                 logger.exception("Could not sync book %s to Supabase", book_id)
                 raise HTTPException(status_code=502, detail="The book could not be saved to cloud storage.") from error
         index_job_id = None
-        if not (book_dir / "character_index.json").is_file():
+        if not (book_dir / "character_index.json").is_file() or not (book_dir / "book_glossary.json").is_file():
             index_job_id = uuid.uuid4().hex
             _set_job(index_job_id, book_id=book_id, job_type="index", status="queued", progress=0, message="Preparing the character list…")
             executor.submit(_process_index, index_job_id, book_id)

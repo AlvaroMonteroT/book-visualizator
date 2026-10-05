@@ -112,14 +112,29 @@ def sync_character_index(*, book_id: str, book_dir: Path) -> int:
                 "evidence_count": int(item.get("evidence_count", 0) or 0),
             }
         )
+    client = get_client()
     if rows:
-        client = get_client()
         _ensure_response_ok(
             client.table("characters").upsert(rows, on_conflict="book_id,name").execute()
         )
         _ensure_response_ok(
             client.table("books").update({"status": "ready"}).eq("book_id", book_id).execute()
         )
+    # Keep the reusable evidence and glossary available after a cloud restart.
+    for filename, content_type in (
+        ("character_index.json", "application/json"),
+        ("character_evidence.jsonl", "application/jsonl"),
+        ("book_glossary.json", "application/json"),
+    ):
+        path = book_dir / filename
+        if path.is_file():
+            _ensure_response_ok(
+                client.storage.from_(BOOK_BUCKET).upload(
+                    path=f"books/{book_id}/{filename}",
+                    file=path.read_bytes(),
+                    file_options={"content-type": content_type, "upsert": "true"},
+                )
+            )
     return len(rows)
 
 

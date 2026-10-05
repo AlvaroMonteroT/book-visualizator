@@ -43,6 +43,7 @@ class ImageSettings:
 class CharacterDescription:
     character: str
     physical_description: str
+    book_context: str = ""
     book_id: str | None = None
     book_title: str | None = None
     source_path: Path | None = None
@@ -150,6 +151,7 @@ def load_description(path: Path) -> CharacterDescription:
         return CharacterDescription(
             character=character.strip(),
             physical_description=physical_description.strip(),
+            book_context=data.get("book_context", "") if isinstance(data.get("book_context", ""), str) else "",
             book_id=data.get("book_id") if isinstance(data.get("book_id"), str) else None,
             book_title=data.get("book_title") if isinstance(data.get("book_title"), str) else None,
             source_path=path,
@@ -171,10 +173,11 @@ Asset type: realistic character portrait for a book visualization
 Primary request: Create a realistic, cinematic portrait of {description.character} based only on the physical description below.
 Subject: {description.character}
 Physical description from the book: {description.physical_description}
+Book/world context from the book: {description.book_context or "No additional context was explicitly supported."}
 Style/medium: photorealistic editorial portrait photography, believable human anatomy, natural skin texture, realistic hair and eyes, subtle imperfections, physically accurate materials.
 Composition/framing: vertical head-and-shoulders portrait, three-quarter view, face clearly visible, centered subject, calm neutral expression, softly out-of-focus background. The subject is an adult and fully clothed; keep the image non-sexual and documentary in tone.
 Lighting/mood: soft natural directional light, gentle shadows, balanced realistic exposure, restrained cinematic color grading.
-Constraints: preserve every supported physical trait; treat the book description as the source of truth; do not add unsupported distinctive features; no nudity, lingerie, erotic posing, sexualized framing, or emphasis on breasts, legs, or body shape; no text, captions, logos, watermark, frame, or extra people.
+Constraints: preserve every supported physical trait; use book/world context for identity and culturally relevant details only; treat fictional categories such as Gold or Red as social/world context, never as literal colors for skin, hair, eyes, or teeth; treat the book description as the source of truth; do not add unsupported distinctive features; no nudity, lingerie, erotic posing, sexualized framing, or emphasis on breasts, legs, or body shape; no text, captions, logos, watermark, frame, or extra people.
 Avoid: illustration, painting, anime, fantasy concept art, plastic skin, beauty retouching, exaggerated muscles, distorted hands or face, artificial symmetry, glamour or boudoir photography."""
     if guidelines:
         prompt += (
