@@ -123,7 +123,9 @@ def sync_character_index(*, book_id: str, book_dir: Path) -> int:
     # Keep the reusable evidence and glossary available after a cloud restart.
     for filename, content_type in (
         ("character_index.json", "application/json"),
-        ("character_evidence.jsonl", "application/jsonl"),
+        # JSONL is JSON-compatible for storage purposes; Supabase buckets commonly
+        # allow application/json but reject the less common application/jsonl type.
+        ("character_evidence.jsonl", "application/json"),
         ("book_glossary.json", "application/json"),
     ):
         path = book_dir / filename
