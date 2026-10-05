@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -90,6 +91,12 @@ class QuestionRequest(BaseModel):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("book-visualizator")
 
+
+def _log_event(event: str, **fields: Any) -> None:
+    """Write searchable, structured diagnostics without logging secrets or book text."""
+    payload = {"event": event, **fields}
+    logger.info("BOOK_VISUALIZATOR %s", json.dumps(payload, ensure_ascii=False, default=str))
+
 app = FastAPI(title="Book Visualizator", version=APP_VERSION)
 allowed_origins = ["http://localhost:8000", "http://127.0.0.1:8000"]
 if PUBLIC_APP_ORIGIN and PUBLIC_APP_ORIGIN not in allowed_origins:
@@ -100,6 +107,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_logging(request, call_next):
+    started = time.monotonic()
+    try:
+        response = await call_next(request)
+        return response
+    except Exception:
+        logger.exception("Request failed: method=%s path=%s", request.method, request.url.path)
+        raise
+    finally:
+        # Avoid flooding hosted logs with the browser's two-second job polling.
+        if not request.url.path.startswith("/api/jobs/") and request.url.path != "/health":
+            _log_event(
+                "request_completed",
+                method=request.method,
+                path=request.url.path,
+                duration_seconds=round(time.monotonic() - started, 3),
+            )
 
 executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="book-visualizator")
 jobs: dict[str, dict[str, Any]] = {}
@@ -122,8 +149,19 @@ def _cached_character_image(book_id: str, character: str) -> Path | None:
 def _set_job(job_id: str, **updates: Any) -> None:
     with jobs_lock:
         previous_status = jobs.get(job_id, {}).get("status")
+        previous_progress = jobs.get(job_id, {}).get("progress")
         jobs.setdefault(job_id, {}).update(updates)
         snapshot = dict(jobs[job_id])
+    if snapshot.get("status") != previous_status or snapshot.get("progress") != previous_progress:
+        _log_event(
+            "job_progress",
+            job_id=job_id,
+            book_id=snapshot.get("book_id"),
+            job_type=snapshot.get("job_type"),
+            status=snapshot.get("status"),
+            progress=snapshot.get("progress"),
+            message=snapshot.get("message"),
+        )
     if supabase_is_configured() and snapshot.get("book_id") and snapshot.get("job_type") and (
         snapshot.get("status") != previous_status or snapshot.get("status") in {"completed", "failed", "no_evidence"}
     ):
@@ -157,6 +195,8 @@ def _image_url(image_path: Path, *, book_id: str, image_type: str, character_nam
 
 
 def _process_character(job_id: str, book_id: str, character: str) -> None:
+    started = time.monotonic()
+    _log_event("character_started", job_id=job_id, book_id=book_id, character=character)
     try:
         _set_job(job_id, status="analyzing", progress=25, message="Finding character evidence…")
         analysis_settings = load_analysis_settings()
@@ -171,8 +211,10 @@ def _process_character(job_id: str, book_id: str, character: str) -> None:
         )
         book_dir = BOOKS_ROOT / book_id
         if (book_dir / "character_index.json").is_file():
+            _log_event("character_analysis_started", job_id=job_id, book_id=book_id, source="saved_index")
             analysis = analyze_indexed_character(book_dir, character, RESULTS_ROOT, analyzer)
         else:
+            _log_event("character_analysis_started", job_id=job_id, book_id=book_id, source="book_scan")
             analysis = analyze_character(
                 book_dir,
                 character,
@@ -229,11 +271,15 @@ def _process_character(job_id: str, book_id: str, character: str) -> None:
             message="Your result is ready." if analysis.status == "completed" else "No physical-description evidence was found.",
             result_id=result_id,
         )
+        _log_event("character_completed", job_id=job_id, book_id=book_id, character=character, duration_seconds=round(time.monotonic() - started, 2))
     except Exception as error:  # The UI receives a readable failure instead of hanging.
+        logger.exception("Character job failed: job_id=%s book_id=%s character=%s", job_id, book_id, character)
         _set_job(job_id, status="failed", progress=100, message=str(error))
 
 
 def _process_index(job_id: str, book_id: str) -> None:
+    started = time.monotonic()
+    _log_event("index_started", job_id=job_id, book_id=book_id)
     try:
         settings = load_analysis_settings()
         analyzer = LunaClient(
@@ -259,11 +305,15 @@ def _process_index(job_id: str, book_id: str) -> None:
         if supabase_is_configured():
             sync_character_index(book_id=book_id, book_dir=BOOKS_ROOT / book_id)
         _set_job(job_id, status="completed", progress=100, message="Character list ready.")
+        _log_event("index_completed", job_id=job_id, book_id=book_id, duration_seconds=round(time.monotonic() - started, 2))
     except Exception as error:
+        logger.exception("Index job failed: job_id=%s book_id=%s", job_id, book_id)
         _set_job(job_id, status="failed", progress=100, message=str(error))
 
 
 def _process_scene(job_id: str, book_id: str, image_bytes: bytes, content_type: str) -> None:
+    started = time.monotonic()
+    _log_event("scene_started", job_id=job_id, book_id=book_id, content_type=content_type, bytes=len(image_bytes))
     try:
         _set_job(job_id, status="reading_photo", progress=15, message="Reading the photographed passage…")
         analysis_settings = load_analysis_settings()
@@ -298,11 +348,15 @@ def _process_scene(job_id: str, book_id: str, image_bytes: bytes, content_type: 
             "image_url": _image_url(image_result.image_path, book_id=book_id, image_type="scene"),
         }
         _set_job(job_id, status="completed", progress=100, message="Your scene is ready.", result_id=result_id)
+        _log_event("scene_completed", job_id=job_id, book_id=book_id, duration_seconds=round(time.monotonic() - started, 2))
     except Exception as error:
+        logger.exception("Scene job failed: job_id=%s book_id=%s", job_id, book_id)
         _set_job(job_id, status="failed", progress=100, message=str(error))
 
 
 def _process_question(job_id: str, book_id: str, question: str) -> None:
+    started = time.monotonic()
+    _log_event("question_started", job_id=job_id, book_id=book_id)
     try:
         _set_job(job_id, status="searching_book", progress=20, message="Finding the relevant book passages…")
         settings = load_analysis_settings()
@@ -340,13 +394,16 @@ def _process_question(job_id: str, book_id: str, question: str) -> None:
             except Exception:
                 logger.exception("Could not sync question result %s", result_id)
         _set_job(job_id, status="completed", progress=100, message="Your book answer is ready.", result_id=result_id)
+        _log_event("question_completed", job_id=job_id, book_id=book_id, duration_seconds=round(time.monotonic() - started, 2))
     except Exception as error:
+        logger.exception("Question job failed: job_id=%s book_id=%s", job_id, book_id)
         _set_job(job_id, status="failed", progress=100, message=str(error))
 
 
 @app.post("/api/books")
 async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
     filename = file.filename or ""
+    _log_event("book_upload_started", filename=filename)
     if not filename.casefold().endswith(".epub"):
         raise HTTPException(status_code=400, detail="Please upload an EPUB file.")
 
@@ -362,6 +419,7 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
         if not zipfile.is_zipfile(temporary_path):
             raise HTTPException(status_code=400, detail="That file is not a valid EPUB.")
         content_sha256 = _sha256_file(temporary_path)
+        _log_event("book_upload_received", filename=filename, bytes=temporary_path.stat().st_size, sha256=content_sha256[:12])
         book_id = None
         book_dir = None
         for metadata_path in BOOKS_ROOT.glob("*/metadata.json"):
@@ -374,6 +432,7 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
                 book_dir = metadata_path.parent
                 break
         if not isinstance(book_id, str) or book_dir is None:
+            _log_event("book_parse_started", filename=filename)
             parsed_book = parse_epub(temporary_path)
             book_id, book_dir = save_parsed_book(
                 parsed_book,
@@ -385,6 +444,7 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
         metadata = _read_json(book_dir / "metadata.json")
         if supabase_is_configured():
             try:
+                _log_event("book_cloud_sync_started", book_id=book_id)
                 sync_book(
                     book_id=metadata["book_id"],
                     title=metadata["title"],
@@ -396,6 +456,7 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
                 )
                 if (book_dir / "character_index.json").is_file():
                     sync_character_index(book_id=book_id, book_dir=book_dir)
+                _log_event("book_cloud_sync_completed", book_id=book_id)
             except Exception as error:
                 logger.exception("Could not sync book %s to Supabase", book_id)
                 raise HTTPException(status_code=502, detail="The book could not be saved to cloud storage.") from error
@@ -404,6 +465,8 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
             index_job_id = uuid.uuid4().hex
             _set_job(index_job_id, book_id=book_id, job_type="index", status="queued", progress=0, message="Preparing the character list…")
             executor.submit(_process_index, index_job_id, book_id)
+            _log_event("index_queued", job_id=index_job_id, book_id=book_id)
+        _log_event("book_upload_completed", book_id=book_id, filename=filename, index_job_id=index_job_id)
         return {
             "book_id": book_id,
             "title": metadata["title"],
