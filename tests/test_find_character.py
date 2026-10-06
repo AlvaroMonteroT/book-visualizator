@@ -61,6 +61,33 @@ class NoEvidenceAnalyzer:
         raise AssertionError("Description should not be requested without evidence")
 
 
+class GlossaryRefiningAnalyzer:
+    def __init__(self) -> None:
+        self.refinement: tuple[str, str, str, list[dict[str, object]]] | None = None
+
+    def find_evidence(self, character_query: str, paragraphs: list[Paragraph]) -> list[tuple[int, int]]:
+        return [paragraph.reference for paragraph in paragraphs if "Sevro" in paragraph.text]
+
+    def describe_character_with_context(
+        self,
+        character_query: str,
+        quotes: list[Paragraph],
+        context_quotes: list[Paragraph],
+        glossary: list[dict[str, object]],
+    ) -> tuple[str, str]:
+        return "Tiny, squat, scrawny, with a dark face and beady eyes.", "Sevro is a Gold and a Bronzie."
+
+    def refine_physical_description(
+        self,
+        character_query: str,
+        physical_description: str,
+        book_context: str,
+        glossary: list[dict[str, object]],
+    ) -> str:
+        self.refinement = (character_query, physical_description, book_context, glossary)
+        return physical_description + " His lowbred Gold lineage suggests compact, wiry strength rather than a polished Gold frame."
+
+
 class FakeResponsesAPI:
     def __init__(self) -> None:
         self.arguments: dict[str, object] = {}
@@ -188,6 +215,42 @@ class FindCharacterTests(unittest.TestCase):
             self.assertEqual(result.status, "no_evidence")
             self.assertIsNone(description["physical_description"])
             self.assertEqual(quotes["quotes"], [])
+
+    def test_refines_description_with_relevant_glossary_without_rereading_book(self) -> None:
+        paragraphs = [
+            Paragraph(1, 1, "Sevro is tiny, squat, scrawny, and has a dark face."),
+            Paragraph(1, 2, "Sevro is a lowbred Gold, a Bronzie."),
+        ]
+        analyzer = GlossaryRefiningAnalyzer()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            book_dir = root / "book"
+            write_parsed_book(book_dir, paragraphs)
+            (book_dir / "book_glossary.json").write_text(
+                json.dumps(
+                    {
+                        "terms": [
+                            {"term": "Gold", "definition": "An enhanced ruling caste."},
+                            {"term": "Bronzie", "definition": "A lowbred, faded Gold."},
+                            {"term": "Unrelated", "definition": "Should not be selected."},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = analyze_character(
+                book_dir=book_dir,
+                character_query="Sevro",
+                results_root=root / "results",
+                analyzer=analyzer,
+            )
+
+            description = json.loads((result.output_dir / "description.json").read_text(encoding="utf-8"))
+            self.assertIn("compact, wiry strength", description["physical_description"])
+            self.assertIsNotNone(analyzer.refinement)
+            assert analyzer.refinement is not None
+            self.assertEqual([item["term"] for item in analyzer.refinement[3]], ["Gold", "Bronzie"])
 
     def test_rejects_non_luna_model_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

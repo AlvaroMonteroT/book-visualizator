@@ -233,15 +233,25 @@ def analyze_indexed_character(
     if quotes:
         context_quotes = context_paragraphs_for_character(character_query, paragraphs)
         describe_with_context = getattr(analyzer, "describe_character_with_context", None)
+        relevant_glossary: list[dict[str, Any]] = []
         if callable(describe_with_context):
+            relevant_glossary = glossary_for_context(character_query, context_quotes, glossary)
             description, book_context = describe_with_context(
                 character_query,
                 quotes,
                 context_quotes,
-                glossary_for_context(character_query, context_quotes, glossary),
+                relevant_glossary,
             )
         else:
             description = analyzer.describe_character(character_query, quotes)
+        refine_description = getattr(analyzer, "refine_physical_description", None)
+        if callable(refine_description) and relevant_glossary:
+            description = refine_description(
+                character_query,
+                description,
+                book_context,
+                relevant_glossary,
+            )
     else:
         description = None
     status = "completed" if description else "no_evidence"
