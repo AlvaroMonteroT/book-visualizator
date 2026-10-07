@@ -72,6 +72,7 @@ from backend.app.cloud_repository import (  # noqa: E402
     get_job as get_cloud_job,
     get_question_result,
     publish_image,
+    restore_character_index,
     sync_book,
     sync_character_index,
     sync_character_result,
@@ -460,6 +461,16 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
                     book_dir=book_dir,
                     status="ready" if (book_dir / "character_index.json").is_file() and (book_dir / "book_glossary.json").is_file() else "indexing",
                 )
+                # Hosted instances can lose their local checkout between deploys.
+                # Restore the durable index artifacts before deciding whether to
+                # queue an expensive indexing pass.
+                restored = restore_character_index(book_id=book_id, book_dir=book_dir)
+                if restored:
+                    _log_event(
+                        "book_artifacts_restored",
+                        book_id=book_id,
+                        artifacts=sorted(restored),
+                    )
                 if (book_dir / "character_index.json").is_file():
                     sync_character_index(book_id=book_id, book_dir=book_dir)
                 _log_event("book_cloud_sync_completed", book_id=book_id)

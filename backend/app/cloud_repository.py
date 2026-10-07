@@ -12,6 +12,11 @@ from backend.app.supabase_client import get_client
 
 BOOK_BUCKET = "book-files"
 IMAGE_BUCKET = "generated-images"
+BOOK_ARTIFACTS = (
+    ("character_index.json", "application/json"),
+    ("character_evidence.jsonl", "application/json"),
+    ("book_glossary.json", "application/json"),
+)
 
 
 def _ensure_response_ok(response: Any) -> Any:
@@ -121,13 +126,7 @@ def sync_character_index(*, book_id: str, book_dir: Path) -> int:
             client.table("books").update({"status": "ready"}).eq("book_id", book_id).execute()
         )
     # Keep the reusable evidence and glossary available after a cloud restart.
-    for filename, content_type in (
-        ("character_index.json", "application/json"),
-        # JSONL is JSON-compatible for storage purposes; Supabase buckets commonly
-        # allow application/json but reject the less common application/jsonl type.
-        ("character_evidence.jsonl", "application/json"),
-        ("book_glossary.json", "application/json"),
-    ):
+    for filename, content_type in BOOK_ARTIFACTS:
         path = book_dir / filename
         if path.is_file():
             _ensure_response_ok(
@@ -138,6 +137,40 @@ def sync_character_index(*, book_id: str, book_dir: Path) -> int:
                 )
             )
     return len(rows)
+
+
+def restore_character_index(*, book_id: str, book_dir: Path) -> set[str]:
+    """Restore saved index artifacts to the local checkout after a server restart.
+
+    Render's local filesystem can be replaced between deploys. The durable copies
+    live in Supabase Storage, so only missing local files are downloaded. Missing
+    objects are treated as an old or not-yet-indexed book and simply leave the
+    normal indexing decision to the caller.
+    """
+    client = get_client()
+    book_dir.mkdir(parents=True, exist_ok=True)
+    restored: set[str] = set()
+    for filename, _content_type in BOOK_ARTIFACTS:
+        destination = book_dir / filename
+        if destination.is_file():
+            restored.add(filename)
+            continue
+        storage_path = f"books/{book_id}/{filename}"
+        try:
+            content = client.storage.from_(BOOK_BUCKET).download(storage_path)
+        except Exception as error:
+            status_code = getattr(error, "status_code", None)
+            message = str(error).casefold()
+            if status_code in {400, 404} or "not found" in message or "does not exist" in message:
+                continue
+            raise RuntimeError(f"Could not restore {storage_path} from Supabase Storage") from error
+        if not isinstance(content, bytes) or not content:
+            continue
+        temporary = destination.with_name(f".{destination.name}.tmp")
+        temporary.write_bytes(content)
+        temporary.replace(destination)
+        restored.add(filename)
+    return restored
 
 
 def get_characters(*, book_id: str) -> list[dict[str, Any]]:
