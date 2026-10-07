@@ -72,6 +72,7 @@ from backend.app.cloud_repository import (  # noqa: E402
     get_job as get_cloud_job,
     get_question_result,
     publish_image,
+    restore_book_data,
     restore_character_index,
     sync_book,
     sync_character_index,
@@ -178,6 +179,31 @@ def _set_job(job_id: str, **updates: Any) -> None:
             )
         except Exception:
             logger.exception("Could not sync job %s", job_id)
+
+
+def _ensure_book_available(book_id: str) -> bool:
+    """Ensure the parsed book is present on the host before processing it."""
+    book_dir = BOOKS_ROOT / book_id
+    if (book_dir / "metadata.json").is_file() and (book_dir / "paragraphs.jsonl").is_file():
+        if supabase_is_configured() and (
+            not (book_dir / "character_index.json").is_file()
+            or not (book_dir / "book_glossary.json").is_file()
+        ):
+            try:
+                restore_character_index(book_id=book_id, book_dir=book_dir)
+            except Exception:
+                logger.exception("Could not restore index artifacts for book %s", book_id)
+        return True
+    if not supabase_is_configured():
+        return False
+    try:
+        restored = restore_book_data(book_id=book_id, book_dir=book_dir)
+        if restored:
+            _log_event("book_local_cache_restored", book_id=book_id)
+        return restored
+    except Exception:
+        logger.exception("Could not restore book %s from Supabase", book_id)
+        return False
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -503,6 +529,7 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
 
 @app.post("/api/books/{book_id}/characters")
 async def start_character(book_id: str, request: CharacterRequest) -> dict[str, str]:
+    _ensure_book_available(book_id)
     book_dir = BOOKS_ROOT / book_id
     if not (book_dir / "metadata.json").is_file():
         raise HTTPException(status_code=404, detail="Book not found.")
@@ -516,6 +543,7 @@ async def start_character(book_id: str, request: CharacterRequest) -> dict[str, 
 
 @app.post("/api/books/{book_id}/scenes")
 async def start_scene(book_id: str, file: UploadFile = File(...)) -> dict[str, str]:
+    _ensure_book_available(book_id)
     if not (BOOKS_ROOT / book_id / "metadata.json").is_file():
         raise HTTPException(status_code=404, detail="Book not found.")
     content_type = file.content_type or ""
@@ -532,6 +560,7 @@ async def start_scene(book_id: str, file: UploadFile = File(...)) -> dict[str, s
 
 @app.post("/api/books/{book_id}/questions")
 async def start_question(book_id: str, request: QuestionRequest) -> dict[str, str]:
+    _ensure_book_available(book_id)
     if not (BOOKS_ROOT / book_id / "metadata.json").is_file():
         raise HTTPException(status_code=404, detail="Book not found.")
     job_id = uuid.uuid4().hex
@@ -542,6 +571,7 @@ async def start_question(book_id: str, request: QuestionRequest) -> dict[str, st
 
 @app.get("/api/books/{book_id}/characters")
 async def list_characters(book_id: str) -> dict[str, Any]:
+    _ensure_book_available(book_id)
     index_path = BOOKS_ROOT / book_id / "character_index.json"
     if not index_path.is_file():
         return {"status": "indexing", "characters": []}

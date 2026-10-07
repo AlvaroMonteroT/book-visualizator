@@ -173,6 +173,64 @@ def restore_character_index(*, book_id: str, book_dir: Path) -> set[str]:
     return restored
 
 
+def restore_book_data(*, book_id: str, book_dir: Path) -> bool:
+    """Hydrate parsed book files from Supabase after a hosted restart.
+
+    Render's disk is a cache, while the books and paragraphs tables are durable.
+    Recreating the small JSON/JSONL files here lets the existing analysis code
+    continue to work without requiring the user to upload the EPUB again.
+    """
+    client = get_client()
+    book_response = _ensure_response_ok(
+        client.table("books").select("*").eq("book_id", book_id).limit(1).execute()
+    )
+    book_rows = list(getattr(book_response, "data", None) or [])
+    if not book_rows:
+        return False
+    book = book_rows[0]
+
+    book_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = book_dir / "metadata.json"
+    paragraphs_path = book_dir / "paragraphs.jsonl"
+    if not metadata_path.is_file() or not paragraphs_path.is_file():
+        metadata = {
+            "format_version": 1,
+            "parser_version": "cloud-restored",
+            "book_id": book.get("book_id", book_id),
+            "title": book.get("title") or "Untitled book",
+            "source_filename": book.get("source_filename") or f"{book_id}.epub",
+            "source_sha256": book.get("source_sha256", ""),
+            "chapter_count": int(book.get("chapter_count") or 0),
+            "paragraph_count": int(book.get("paragraph_count") or 0),
+        }
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        paragraph_response = _ensure_response_ok(
+            client.table("book_paragraphs")
+            .select("chapter_number,paragraph_number,paragraph_text")
+            .eq("book_id", book_id)
+            .order("chapter_number")
+            .order("paragraph_number")
+            .execute()
+        )
+        paragraph_rows = list(getattr(paragraph_response, "data", None) or [])
+        lines = [
+            json.dumps(
+                {
+                    "chapter_number": row["chapter_number"],
+                    "paragraph_number": row["paragraph_number"],
+                    "text": row["paragraph_text"],
+                },
+                ensure_ascii=False,
+            )
+            for row in paragraph_rows
+        ]
+        paragraphs_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+    restore_character_index(book_id=book_id, book_dir=book_dir)
+    return metadata_path.is_file() and paragraphs_path.is_file()
+
+
 def get_characters(*, book_id: str) -> list[dict[str, Any]]:
     """Read the shared character list for a book."""
     response = _ensure_response_ok(
