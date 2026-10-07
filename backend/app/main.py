@@ -503,8 +503,11 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
 
 @app.post("/api/books/{book_id}/characters")
 async def start_character(book_id: str, request: CharacterRequest) -> dict[str, str]:
-    if not (BOOKS_ROOT / book_id / "metadata.json").is_file():
+    book_dir = BOOKS_ROOT / book_id
+    if not (book_dir / "metadata.json").is_file():
         raise HTTPException(status_code=404, detail="Book not found.")
+    if not (book_dir / "character_index.json").is_file() or not (book_dir / "book_glossary.json").is_file():
+        raise HTTPException(status_code=409, detail="Your book is still being prepared. Please wait until indexing is complete.")
     job_id = uuid.uuid4().hex
     _set_job(job_id, book_id=book_id, job_type="character", status="queued", progress=5, message="Starting your character search…")
     executor.submit(_process_character, job_id, book_id, request.character.strip())

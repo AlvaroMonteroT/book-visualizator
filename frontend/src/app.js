@@ -48,6 +48,7 @@ let selectedBook = null;
 let currentResultId = null;
 let activeMode = 'character';
 let modeChosen = false;
+let bookReady = false;
 
 const modeLabels = {
   character: 'See a character',
@@ -126,38 +127,84 @@ function setError(message = '') {
   formError.textContent = message;
 }
 
-function setBookStatus(book) {
-  const indexMessage = book.index_job_id ? 'uploaded · preparing character list' : 'uploaded';
-  bookStatus.innerHTML = `<span class="check">✓</span><span><strong>${escapeHtml(book.title)}</strong><small>${escapeHtml(book.filename)} · ${indexMessage}</small></span><button id="replace-book" class="text-button" type="button">Replace</button>`;
+function setExplorationEnabled(enabled) {
+  bookReady = enabled;
+  characterMode.disabled = !enabled;
+  sceneMode.disabled = !enabled;
+  questionMode.disabled = !enabled;
+  characterSelect.disabled = !enabled;
+  sceneInput.disabled = !enabled;
+  questionInput.disabled = !enabled;
+  questionSubmit.disabled = !enabled;
+}
+
+function renderBookStatus(book, state = 'ready', job = null) {
+  const progress = Math.max(0, Math.min(100, Number(job?.progress ?? (state === 'ready' ? 100 : 5))));
+  const indexing = state === 'indexing';
+  const failed = state === 'failed';
+  const message = failed
+    ? (job?.message || 'Indexing failed. Replace the book to try again.')
+    : indexing
+      ? (job?.message || 'Reading the book and building your character list…')
+      : 'uploaded · character list ready';
+  const icon = indexing
+    ? '<span class="spinner small" aria-hidden="true"></span>'
+    : failed
+      ? '<span class="status-icon error" aria-hidden="true">!</span>'
+      : '<span class="check" aria-hidden="true">✓</span>';
+  const progressMarkup = indexing
+    ? `<span class="book-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><span class="book-progress-bar" style="width:${progress}%"></span></span><em>${progress}%</em>`
+    : '';
+  bookStatus.className = `status-card book-status-${state}`;
+  bookStatus.innerHTML = `${icon}<span class="book-status-copy"><strong>${escapeHtml(book.title)}</strong><small>${escapeHtml(book.filename)} · ${escapeHtml(message)}</small>${progressMarkup}</span><button id="replace-book" class="text-button" type="button">Replace</button>`;
   show(bookStatus);
   hide(uploadZone);
-  bookStepTitle.textContent = 'Your book is ready';
-  bookStepCopy.textContent = 'You can change it anytime.';
+  document.querySelector('#replace-book').addEventListener('click', () => bookInput.click());
+}
+
+function setBookStatus(book) {
+  const indexing = Boolean(book.index_job_id);
+  bookStepTitle.textContent = indexing ? 'Preparing your book…' : 'Your book is ready';
+  bookStepCopy.textContent = indexing ? 'We’re reading it and building your character list.' : 'You can change it anytime.';
   modeChosen = false;
   show(modeSection);
-  characterSelect.disabled = Boolean(book.index_job_id);
-  sceneInput.disabled = false;
-  characterMode.disabled = false;
-  sceneMode.disabled = false;
-  questionMode.disabled = false;
-  questionSubmit.disabled = false;
+  setExplorationEnabled(!indexing);
+  renderBookStatus(book, indexing ? 'indexing' : 'ready');
   setMode(activeMode);
-  document.querySelector('#replace-book').addEventListener('click', () => bookInput.click());
+  if (indexing) {
+    emptyTitle.textContent = 'Preparing your reading desk…';
+    emptyDescription.textContent = 'We’ll enable the exploration tools as soon as your book is indexed.';
+  }
   if (book.index_job_id) pollIndexJob(book.index_job_id);
   else loadCharacterOptions();
 }
 
 async function pollIndexJob(jobId) {
-  const response = await fetch(`/api/jobs/${jobId}`);
-  const job = await response.json();
-  if (job.status === 'completed' || job.status === 'failed') {
-    characterSelect.disabled = false;
-    const small = bookStatus.querySelector('small');
-    if (small) small.textContent = job.status === 'completed' ? 'uploaded · character list ready' : 'uploaded · character list unavailable';
-    if (job.status === 'completed') await loadCharacterOptions();
-    return;
+  try {
+    const response = await fetch(`/api/jobs/${jobId}`);
+    const job = await response.json();
+    if (job.status === 'completed') {
+      bookReady = true;
+      bookStepTitle.textContent = 'Your book is ready';
+      bookStepCopy.textContent = 'You can change it anytime.';
+      setExplorationEnabled(true);
+      renderBookStatus(selectedBook, 'ready', job);
+      setMode(activeMode);
+      await loadCharacterOptions();
+      return;
+    }
+    if (job.status === 'failed') {
+      bookStepTitle.textContent = 'We couldn’t finish preparing your book';
+      bookStepCopy.textContent = 'You can replace it and try again.';
+      setExplorationEnabled(false);
+      renderBookStatus(selectedBook, 'failed', job);
+      return;
+    }
+    renderBookStatus(selectedBook, 'indexing', job);
+    window.setTimeout(() => pollIndexJob(jobId), 1400);
+  } catch (error) {
+    window.setTimeout(() => pollIndexJob(jobId), 2200);
   }
-  window.setTimeout(() => pollIndexJob(jobId).catch(() => {}), 1400);
 }
 
 async function loadCharacterOptions() {
@@ -174,7 +221,10 @@ async function uploadBook(file) {
     setError('Please choose an EPUB file.');
     return;
   }
+  setExplorationEnabled(false);
+  hide(modeSection);
   bookStatus.innerHTML = '<span class="spinner small"></span><span><strong>Uploading book…</strong><small>Preparing the reading desk</small></span>';
+  bookStatus.className = 'status-card book-status-indexing';
   show(bookStatus);
   const form = new FormData();
   form.append('file', file);
@@ -198,6 +248,7 @@ async function uploadBook(file) {
 async function uploadScene(file) {
   setError('');
   if (!selectedBook) return setError('Upload a book before visualizing a passage.');
+  if (!bookReady) return setError('Your book is still being prepared. Please wait until it is ready.');
   if (!/^image\/(jpeg|png|webp)$/.test(file.type)) {
     setError('Please choose a JPG, PNG, or WEBP photo.');
     return;
@@ -223,6 +274,7 @@ async function askQuestion() {
   setError('');
   const question = questionInput.value.trim();
   if (!selectedBook) return setError('Upload a book before asking a question.');
+  if (!bookReady) return setError('Your book is still being prepared. Please wait until it is ready.');
   if (!question) return setError('Write a question about the book first.');
   hide(emptyState); hide(resultCard); hide(questionResult); show(processingState);
   processingTitle.textContent = 'Asking the book…';
@@ -243,6 +295,7 @@ async function analyzeCharacter() {
   setError('');
   const character = characterSelect.value.trim();
   if (!selectedBook) return setError('Upload a book first.');
+  if (!bookReady) return setError('Your book is still being prepared. Please wait until it is ready.');
   if (!character) return;
   hide(emptyState); hide(resultCard); show(processingState);
   processingTitle.textContent = `Finding ${character}…`;
