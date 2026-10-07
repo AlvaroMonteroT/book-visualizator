@@ -113,6 +113,21 @@ class GenerateImageTests(unittest.TestCase):
         self.assertIn(description.physical_description, prompt)
         self.assertIn("no text, captions, logos, watermark", prompt)
 
+    def test_prompt_uses_age_appropriate_safety_for_minors(self) -> None:
+        from scripts.generate_image import CharacterDescription
+
+        description = CharacterDescription(
+            character="Eo",
+            physical_description="Eo is a tiny, slim sixteen-year-old girl with rust-red hair.",
+            book_context="Eo is sixteen and is remembered in a memorial depiction.",
+        )
+        prompt = build_prompt(description)
+        self.assertIn("The subject is a minor", prompt)
+        self.assertIn("age-appropriate", prompt)
+        self.assertIn("Do not depict romance, intimacy, or adult styling", prompt)
+        self.assertNotIn("The subject is an adult", prompt)
+        self.assertNotIn("breasts, legs, or body shape", prompt)
+
 
 def load_description_from_values():
     from scripts.generate_image import CharacterDescription

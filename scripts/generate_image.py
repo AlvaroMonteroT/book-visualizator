@@ -168,6 +168,37 @@ def load_description(path: Path) -> CharacterDescription:
 
 
 def build_prompt(description: CharacterDescription, guidelines: str = "") -> str:
+    # Keep the safety framing consistent with the subject's supported age. The
+    # book text remains the source of truth, but an unconditional "adult"
+    # instruction conflicts with characters who are explicitly minors.
+    minor_subject = bool(
+        re.search(
+            r"\b(?:minor|child|children|teenager|teen|adolescent|"
+            r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+            r"thirteen|fourteen|fifteen|sixteen|seventeen|1[0-7]|[5-9])-year-old)\b",
+            f"{description.physical_description} {description.book_context}".casefold(),
+        )
+    )
+    if minor_subject:
+        composition_safety = (
+            "The subject is a minor; depict an age-appropriate, fully clothed, non-sexual "
+            "documentary or memorial portrait. Do not depict romance, intimacy, or adult styling."
+        )
+        safety_constraints = (
+            "For a minor, keep the framing age-appropriate and non-sexual; use ordinary modest "
+            "clothing and a neutral pose. No sexual content, romantic intimacy, revealing "
+            "clothing, suggestive posing, or body-focused framing; no text, captions, logos, "
+            "watermark, frame, or extra people."
+        )
+    else:
+        composition_safety = (
+            "The subject is an adult and fully clothed; keep the image non-sexual and "
+            "documentary in tone."
+        )
+        safety_constraints = (
+            "No sexual content, nudity, revealing clothing, suggestive posing, or body-focused "
+            "framing; no text, captions, logos, watermark, frame, or extra people."
+        )
     prompt = f"""Use case: photorealistic-natural
 Asset type: realistic character portrait for a book visualization
 Primary request: Create a realistic, cinematic portrait of {description.character} based only on the physical description below.
@@ -175,9 +206,9 @@ Subject: {description.character}
 Physical description from the book: {description.physical_description}
 Book/world context from the book: {description.book_context or "No additional context was explicitly supported."}
 Style/medium: photorealistic editorial portrait photography, believable human anatomy, natural skin texture, realistic hair and eyes, subtle imperfections, physically accurate materials.
-Composition/framing: vertical head-and-shoulders portrait, three-quarter view, face clearly visible, centered subject, calm neutral expression, softly out-of-focus background. The subject is an adult and fully clothed; keep the image non-sexual and documentary in tone.
+Composition/framing: vertical head-and-shoulders portrait, three-quarter view, face clearly visible, centered subject, calm neutral expression, softly out-of-focus background. {composition_safety}
 Lighting/mood: soft natural directional light, gentle shadows, balanced realistic exposure, restrained cinematic color grading.
-Constraints: preserve every supported physical trait; use book/world context for identity and culturally relevant details only; treat fictional categories such as Gold or Red as social/world context, never as literal colors for skin, hair, eyes, or teeth; treat the book description as the source of truth; do not add unsupported distinctive features; no nudity, lingerie, erotic posing, sexualized framing, or emphasis on breasts, legs, or body shape; no text, captions, logos, watermark, frame, or extra people.
+Constraints: preserve every supported physical trait; use book/world context for identity and culturally relevant details only; treat fictional categories such as Gold or Red as social/world context, never as literal colors for skin, hair, eyes, or teeth; treat the book description as the source of truth; do not add unsupported distinctive features; {safety_constraints}
 Avoid: illustration, painting, anime, fantasy concept art, plastic skin, beauty retouching, exaggerated muscles, distorted hands or face, artificial symmetry, glamour or boudoir photography."""
     if guidelines:
         prompt += (
