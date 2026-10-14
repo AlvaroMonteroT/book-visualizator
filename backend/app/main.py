@@ -67,6 +67,11 @@ from scripts.parse_book import (  # noqa: E402
 )
 from backend.app.supabase_client import is_configured as supabase_is_configured  # noqa: E402
 from backend.app.cloud_repository import (  # noqa: E402
+    find_book_by_hash,
+    get_saved_result,
+    list_books as list_cloud_books,
+    list_saved_results,
+    sync_saved_result,
     get_character_result,
     get_characters,
     get_job as get_cloud_job,
@@ -80,6 +85,7 @@ from backend.app.cloud_repository import (  # noqa: E402
     sync_job,
     sync_question,
 )
+from backend.app import local_repository  # noqa: E402
 
 
 class CharacterRequest(BaseModel):
@@ -134,6 +140,91 @@ executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="book-visualizat
 jobs: dict[str, dict[str, Any]] = {}
 results: dict[str, dict[str, Any]] = {}
 jobs_lock = threading.Lock()
+index_lock = threading.Lock()
+
+
+def _validate_id(value: str) -> None:
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", value):
+        raise HTTPException(status_code=400, detail="Invalid identifier.")
+
+
+def _index_ready(book_dir: Path) -> bool:
+    if not all((book_dir / name).is_file() for name in (
+        "character_index.json", "character_evidence.jsonl"
+    )):
+        return False
+    # Older indexes predate glossary extraction. They remain usable, and the
+    # indexed analysis code already treats the glossary as optional.
+    try:
+        index = _read_json(book_dir / "character_index.json")
+        return (book_dir / "book_glossary.json").is_file() or "glossary_count" not in index
+    except (OSError, ValueError):
+        return False
+
+
+def _open_book_record(book_id: str) -> dict[str, Any]:
+    if not _ensure_book_available(book_id):
+        raise HTTPException(status_code=404, detail="Book not found or saved data could not be restored.")
+    book_dir = BOOKS_ROOT / book_id
+    metadata = _read_json(book_dir / "metadata.json")
+    index_job_id = None
+    if not _index_ready(book_dir):
+        # Selecting or reuploading a book twice must not start duplicate scans.
+        with index_lock:
+            with jobs_lock:
+                index_job_id = next((job_id for job_id, job in jobs.items()
+                    if job.get("book_id") == book_id and job.get("job_type") == "index"
+                    and job.get("status") not in {"completed", "failed"}), None)
+            if index_job_id is None:
+                index_job_id = uuid.uuid4().hex
+                _set_job(index_job_id, book_id=book_id, job_type="index", status="queued",
+                         progress=0, message="Preparing the character list…")
+                executor.submit(_process_index, index_job_id, book_id)
+    return {
+        "book_id": book_id, "title": metadata["title"],
+        "filename": metadata.get("source_filename", f"{book_id}.epub"),
+        "paragraph_count": metadata["paragraph_count"], "chapter_count": metadata["chapter_count"],
+        "status": "indexing" if index_job_id else "ready", "index_job_id": index_job_id,
+    }
+
+
+def _save_result(record: dict[str, Any]) -> None:
+    if record.get("quotes_path"):
+        record["quotes"] = _read_json(Path(record.pop("quotes_path"))).get("quotes", [])
+    local_repository.save_result(RESULTS_ROOT, record)
+    results[record["result_id"]] = record
+    if supabase_is_configured():
+        try:
+            sync_saved_result(record)
+        except Exception:
+            logger.exception("Could not save durable cloud result %s", record["result_id"])
+
+
+def _saved_results(book_id: str) -> list[dict[str, Any]]:
+    records = {record["result_id"]: record for record in
+               local_repository.list_results(RESULTS_ROOT, IMAGES_ROOT, book_id)}
+    if supabase_is_configured():
+        try:
+            for record in list_saved_results(book_id):
+                records[record["result_id"]] = record
+                local_repository.save_result(RESULTS_ROOT, record)
+        except Exception:
+            logger.exception("Could not read cloud results for book %s", book_id)
+    return sorted(records.values(), key=lambda record: record.get("created_at") or "", reverse=True)
+
+
+def _cached_result(book_id: str, result_type: str, field: str, value: str) -> dict[str, Any] | None:
+    normalized = " ".join(value.split()).casefold()
+    return next((record for record in _saved_results(book_id)
+                 if record.get("result_type", "character") == result_type
+                 and " ".join(str(record.get(field, "")).split()).casefold() == normalized), None)
+
+
+def _completed_cached_job(book_id: str, job_type: str, record: dict[str, Any]) -> dict[str, str]:
+    job_id = uuid.uuid4().hex
+    _set_job(job_id, book_id=book_id, job_type=job_type, status="completed", progress=100,
+             message="Using your saved result.", result_id=record["result_id"])
+    return {"job_id": job_id}
 
 
 def _cached_character_image(book_id: str, character: str) -> Path | None:
@@ -183,16 +274,15 @@ def _set_job(job_id: str, **updates: Any) -> None:
 
 def _ensure_book_available(book_id: str) -> bool:
     """Ensure the parsed book is present on the host before processing it."""
+    _validate_id(book_id)
     book_dir = BOOKS_ROOT / book_id
     if (book_dir / "metadata.json").is_file() and (book_dir / "paragraphs.jsonl").is_file():
-        if supabase_is_configured() and (
-            not (book_dir / "character_index.json").is_file()
-            or not (book_dir / "book_glossary.json").is_file()
-        ):
+        if supabase_is_configured() and not _index_ready(book_dir):
             try:
                 restore_character_index(book_id=book_id, book_dir=book_dir)
             except Exception:
                 logger.exception("Could not restore index artifacts for book %s", book_id)
+                raise HTTPException(status_code=502, detail="Saved index could not be restored. Please try again.")
         return True
     if not supabase_is_configured():
         return False
@@ -203,7 +293,7 @@ def _ensure_book_available(book_id: str) -> bool:
         return restored
     except Exception:
         logger.exception("Could not restore book %s from Supabase", book_id)
-        return False
+        raise HTTPException(status_code=502, detail="Saved book data could not be restored. Please try again.")
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -284,7 +374,7 @@ def _process_character(job_id: str, book_id: str, character: str) -> None:
                 _log_event("image_request_completed", job_id=job_id, book_id=book_id, image_type="portrait", request_id=image_result.request_id)
                 result_record["image_url"] = _image_url(image_result.image_path, book_id=book_id, image_type="portrait", character_name=character, job_id=job_id)
 
-        results[result_id] = result_record
+        _save_result(result_record)
         if supabase_is_configured() and analysis.status == "completed":
             try:
                 sync_character_result(
@@ -293,6 +383,7 @@ def _process_character(job_id: str, book_id: str, character: str) -> None:
                     character=character,
                     description=description,
                     quotes=_read_json(analysis.output_dir / "quotes.json").get("quotes", []),
+                    image_path=result_record["image_url"],
                 )
             except Exception:
                 logger.exception("Could not sync character result %s", result_id)
@@ -380,6 +471,7 @@ def _process_scene(job_id: str, book_id: str, image_bytes: bytes, content_type: 
             "match_confidence": round(match.confidence, 3),
             "image_url": _image_url(image_result.image_path, book_id=book_id, image_type="scene", job_id=job_id),
         }
+        _save_result(results[result_id])
         _set_job(job_id, status="completed", progress=100, message="Your scene is ready.", result_id=result_id)
         _log_event("scene_completed", job_id=job_id, book_id=book_id, duration_seconds=round(time.monotonic() - started, 2))
     except Exception as error:
@@ -414,6 +506,7 @@ def _process_question(job_id: str, book_id: str, question: str) -> None:
             "citations": answer["citations"],
             "context": context_payload(context),
         }
+        _save_result(results[result_id])
         if supabase_is_configured():
             try:
                 sync_question(
@@ -464,7 +557,18 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
                 book_id = existing_metadata.get("book_id")
                 book_dir = metadata_path.parent
                 break
-        if not isinstance(book_id, str) or book_dir is None:
+        if supabase_is_configured():
+            try:
+                stored = find_book_by_hash(content_sha256)
+                if stored and _ensure_book_available(stored["book_id"]):
+                    return _open_book_record(stored["book_id"])
+            except HTTPException:
+                raise
+            except Exception as error:
+                raise HTTPException(status_code=502, detail="Could not check the saved book library. Please try again.") from error
+        if not supabase_is_configured() and isinstance(book_id, str) and _ensure_book_available(book_id):
+            return _open_book_record(book_id)
+        if not isinstance(book_id, str) or book_dir is None or not (book_dir / "paragraphs.jsonl").is_file():
             _log_event("book_parse_started", filename=filename)
             parsed_book = parse_epub(temporary_path)
             book_id, book_dir = save_parsed_book(
@@ -485,7 +589,7 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
                     source_sha256=metadata["source_sha256"],
                     source_path=UPLOADS_ROOT / f"{book_id}.epub",
                     book_dir=book_dir,
-                    status="ready" if (book_dir / "character_index.json").is_file() and (book_dir / "book_glossary.json").is_file() else "indexing",
+                    status="ready" if _index_ready(book_dir) else "indexing",
                 )
                 # Hosted instances can lose their local checkout between deploys.
                 # Restore the durable index artifacts before deciding whether to
@@ -497,28 +601,13 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
                         book_id=book_id,
                         artifacts=sorted(restored),
                     )
-                if (book_dir / "character_index.json").is_file():
+                if _index_ready(book_dir):
                     sync_character_index(book_id=book_id, book_dir=book_dir)
                 _log_event("book_cloud_sync_completed", book_id=book_id)
             except Exception as error:
                 logger.exception("Could not sync book %s to Supabase", book_id)
                 raise HTTPException(status_code=502, detail="The book could not be saved to cloud storage.") from error
-        index_job_id = None
-        if not (book_dir / "character_index.json").is_file() or not (book_dir / "book_glossary.json").is_file():
-            index_job_id = uuid.uuid4().hex
-            _set_job(index_job_id, book_id=book_id, job_type="index", status="queued", progress=0, message="Preparing the character list…")
-            executor.submit(_process_index, index_job_id, book_id)
-            _log_event("index_queued", job_id=index_job_id, book_id=book_id)
-        _log_event("book_upload_completed", book_id=book_id, filename=filename, index_job_id=index_job_id)
-        return {
-            "book_id": book_id,
-            "title": metadata["title"],
-            "filename": filename,
-            "paragraph_count": metadata["paragraph_count"],
-            "chapter_count": metadata["chapter_count"],
-            "status": "uploaded",
-            "index_job_id": index_job_id,
-        }
+        return _open_book_record(book_id)
     except HTTPException:
         raise
     except (OSError, ValueError, zipfile.BadZipFile) as error:
@@ -527,13 +616,55 @@ async def upload_book(file: UploadFile = File(...)) -> dict[str, Any]:
         temporary_path.unlink(missing_ok=True)
 
 
+@app.get("/api/books")
+async def list_books() -> dict[str, Any]:
+    catalog = {}
+    if supabase_is_configured():
+        try:
+            catalog = {book["book_id"]: book for book in list_cloud_books()}
+        except Exception as error:
+            raise HTTPException(status_code=502, detail="The saved library could not be loaded. Please try again.") from error
+    for path in BOOKS_ROOT.glob("*/metadata.json"):
+        try:
+            metadata = _read_json(path)
+            book_id = path.parent.name
+            catalog[book_id] = {**catalog.get(book_id, {}), **metadata,
+                "status": "ready" if _index_ready(path.parent) else catalog.get(book_id, {}).get("status", "uploaded")}
+        except (OSError, ValueError):
+            continue
+    return {"books": [{
+        "book_id": book["book_id"], "title": book["title"],
+        "filename": book.get("source_filename", ""), "status": book.get("status", "uploaded"),
+        "paragraph_count": book.get("paragraph_count", 0), "chapter_count": book.get("chapter_count", 0),
+    } for book in sorted(catalog.values(), key=lambda book: book["title"].casefold())]}
+
+
+@app.post("/api/books/{book_id}/open")
+async def open_book(book_id: str) -> dict[str, Any]:
+    return _open_book_record(book_id)
+
+
+@app.get("/api/books/{book_id}/results")
+async def book_results(book_id: str) -> dict[str, Any]:
+    _validate_id(book_id)
+    return {"results": [{
+        "result_id": record["result_id"], "result_type": record.get("result_type", "character"),
+        "label": record.get("character") or record.get("question") or
+                 "Scene: " + record.get("matched_paragraph", {}).get("text", "")[:80],
+        "created_at": record.get("created_at"),
+    } for record in _saved_results(book_id)]}
+
+
 @app.post("/api/books/{book_id}/characters")
 async def start_character(book_id: str, request: CharacterRequest) -> dict[str, str]:
     _ensure_book_available(book_id)
     book_dir = BOOKS_ROOT / book_id
     if not (book_dir / "metadata.json").is_file():
         raise HTTPException(status_code=404, detail="Book not found.")
-    if not (book_dir / "character_index.json").is_file() or not (book_dir / "book_glossary.json").is_file():
+    cached = _cached_result(book_id, "character", "character", request.character)
+    if cached:
+        return _completed_cached_job(book_id, "character", cached)
+    if not _index_ready(book_dir):
         raise HTTPException(status_code=409, detail="Your book is still being prepared. Please wait until indexing is complete.")
     job_id = uuid.uuid4().hex
     _set_job(job_id, book_id=book_id, job_type="character", status="queued", progress=5, message="Starting your character search…")
@@ -563,6 +694,9 @@ async def start_question(book_id: str, request: QuestionRequest) -> dict[str, st
     _ensure_book_available(book_id)
     if not (BOOKS_ROOT / book_id / "metadata.json").is_file():
         raise HTTPException(status_code=404, detail="Book not found.")
+    cached = _cached_result(book_id, "question", "question", request.question)
+    if cached:
+        return _completed_cached_job(book_id, "question", cached)
     job_id = uuid.uuid4().hex
     _set_job(job_id, book_id=book_id, job_type="question", status="queued", progress=5, message="Preparing your book question…")
     executor.submit(_process_question, job_id, book_id, request.question.strip())
@@ -614,10 +748,12 @@ async def get_job(job_id: str) -> dict[str, Any]:
 
 @app.get("/api/results/{result_id}")
 async def get_result(result_id: str) -> dict[str, Any]:
-    result = results.get(result_id)
+    _validate_id(result_id)
+    result = results.get(result_id) or local_repository.get_result(RESULTS_ROOT, result_id)
     if result is None and supabase_is_configured():
         try:
-            stored_character = get_character_result(result_id=result_id)
+            result = get_saved_result(result_id)
+            stored_character = get_character_result(result_id=result_id) if result is None else None
             if stored_character:
                 result = {
                     "result_id": result_id,
@@ -627,7 +763,7 @@ async def get_result(result_id: str) -> dict[str, Any]:
                     "quotes": stored_character.get("quotes", []),
                     "image_url": stored_character.get("image_path"),
                 }
-            else:
+            elif result is None:
                 stored_question = get_question_result(result_id=result_id)
                 if stored_question:
                     result = {
@@ -648,18 +784,8 @@ async def get_result(result_id: str) -> dict[str, Any]:
 
 @app.get("/api/results/{result_id}/quotes")
 async def get_quotes(result_id: str) -> dict[str, Any]:
-    result = results.get(result_id)
-    if result is None and supabase_is_configured():
-        try:
-            stored_character = get_character_result(result_id=result_id)
-            if stored_character:
-                return {"quotes": stored_character.get("quotes", [])}
-        except Exception:
-            logger.exception("Could not read stored quotes %s", result_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Result not found.")
-    quotes = _read_json(Path(result["quotes_path"]))
-    return {"quotes": quotes.get("quotes", [])}
+    result = await get_result(result_id)
+    return {"quotes": result.get("quotes", [])}
 
 
 if FRONTEND_ROOT.is_dir():

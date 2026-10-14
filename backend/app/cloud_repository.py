@@ -19,6 +19,76 @@ BOOK_ARTIFACTS = (
 )
 
 
+def _all_rows(query: Any) -> list[dict[str, Any]]:
+    """Read beyond Supabase's default page limit."""
+    rows: list[dict[str, Any]] = []
+    while True:
+        response = _ensure_response_ok(query.range(len(rows), len(rows) + 499).execute())
+        page = list(getattr(response, "data", None) or [])
+        rows.extend(page)
+        if len(page) < 500:
+            return rows
+
+
+def list_books() -> list[dict[str, Any]]:
+    return _all_rows(get_client().table("books").select("*").order("title").order("book_id"))
+
+
+def find_book_by_hash(source_sha256: str) -> dict[str, Any] | None:
+    response = _ensure_response_ok(
+        get_client().table("books").select("*").eq("source_sha256", source_sha256).limit(1).execute()
+    )
+    rows = list(getattr(response, "data", None) or [])
+    return rows[0] if rows else None
+
+
+def sync_saved_result(result: dict[str, Any]) -> None:
+    _ensure_response_ok(get_client().table("saved_results").upsert({
+        "result_id": result["result_id"], "book_id": result["book_id"],
+        "payload": result,
+    }, on_conflict="result_id").execute())
+
+
+def list_saved_results(book_id: str) -> list[dict[str, Any]]:
+    client = get_client()
+    records = [row["payload"] for row in _all_rows(
+        client.table("saved_results").select("payload").eq("book_id", book_id).order("result_id")
+    )]
+    known = {record["result_id"] for record in records}
+    # Keep results made before the saved library was introduced discoverable.
+    for table in ("character_results", "questions"):
+        for row in _all_rows(client.table(table).select("*").eq("book_id", book_id).order("created_at")):
+            if not row.get("result_id") or row["result_id"] in known:
+                continue
+            if table == "character_results":
+                records.append({**row, "result_type": "character", "image_url": row.get("image_path")})
+            else:
+                records.append({**row, "result_type": "question"})
+    # Earlier character records omitted the portrait URL even when the image
+    # was saved successfully. Recover the link from the image catalog.
+    missing_portraits = [record for record in records
+                        if record.get("result_type", "character") == "character" and not record.get("image_url")]
+    if missing_portraits:
+        images = _all_rows(client.table("images").select("storage_path,metadata")
+                           .eq("book_id", book_id).eq("image_type", "portrait")
+                           .eq("status", "completed").order("created_at", desc=True))
+        for record in missing_portraits:
+            image = next((item for item in images if
+                          (item.get("metadata") or {}).get("character", "").casefold()
+                          == record.get("character", "").casefold()), None)
+            if image:
+                record["image_url"] = client.storage.from_(IMAGE_BUCKET).get_public_url(image["storage_path"])
+    return records
+
+
+def get_saved_result(result_id: str) -> dict[str, Any] | None:
+    response = _ensure_response_ok(
+        get_client().table("saved_results").select("payload").eq("result_id", result_id).limit(1).execute()
+    )
+    rows = list(getattr(response, "data", None) or [])
+    return rows[0]["payload"] if rows else None
+
+
 def _ensure_response_ok(response: Any) -> Any:
     error = getattr(response, "error", None)
     if error:
@@ -122,9 +192,6 @@ def sync_character_index(*, book_id: str, book_dir: Path) -> int:
         _ensure_response_ok(
             client.table("characters").upsert(rows, on_conflict="book_id,name").execute()
         )
-        _ensure_response_ok(
-            client.table("books").update({"status": "ready"}).eq("book_id", book_id).execute()
-        )
     # Keep the reusable evidence and glossary available after a cloud restart.
     for filename, content_type in BOOK_ARTIFACTS:
         path = book_dir / filename
@@ -136,6 +203,11 @@ def sync_character_index(*, book_id: str, book_dir: Path) -> int:
                     file_options={"content-type": content_type, "upsert": "true"},
                 )
             )
+    # Publish readiness only after the reusable artifacts are durable, including
+    # books with an empty character list.
+    _ensure_response_ok(
+        client.table("books").update({"status": "ready"}).eq("book_id", book_id).execute()
+    )
     return len(rows)
 
 
@@ -164,7 +236,7 @@ def restore_character_index(*, book_id: str, book_dir: Path) -> set[str]:
             if status_code in {400, 404} or "not found" in message or "does not exist" in message:
                 continue
             raise RuntimeError(f"Could not restore {storage_path} from Supabase Storage") from error
-        if not isinstance(content, bytes) or not content:
+        if not isinstance(content, bytes):
             continue
         temporary = destination.with_name(f".{destination.name}.tmp")
         temporary.write_bytes(content)
@@ -203,17 +275,15 @@ def restore_book_data(*, book_id: str, book_dir: Path) -> bool:
             "chapter_count": int(book.get("chapter_count") or 0),
             "paragraph_count": int(book.get("paragraph_count") or 0),
         }
-        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-        paragraph_response = _ensure_response_ok(
+        paragraph_rows = _all_rows(
             client.table("book_paragraphs")
             .select("chapter_number,paragraph_number,paragraph_text")
             .eq("book_id", book_id)
             .order("chapter_number")
             .order("paragraph_number")
-            .execute()
         )
-        paragraph_rows = list(getattr(paragraph_response, "data", None) or [])
+        if len(paragraph_rows) != metadata["paragraph_count"]:
+            raise ValueError("Stored book paragraphs are incomplete; refusing to cache partial text")
         lines = [
             json.dumps(
                 {
@@ -225,7 +295,10 @@ def restore_book_data(*, book_id: str, book_dir: Path) -> bool:
             )
             for row in paragraph_rows
         ]
-        paragraphs_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        temporary = paragraphs_path.with_suffix(".tmp")
+        temporary.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        temporary.replace(paragraphs_path)
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     restore_character_index(book_id=book_id, book_dir=book_dir)
     return metadata_path.is_file() and paragraphs_path.is_file()
@@ -244,8 +317,9 @@ def publish_image(*, book_id: str, image_path: Path, image_type: str, character_
     client = get_client()
     suffix = image_path.suffix.lower() or ".png"
     relative_name = image_path.name
-    storage_path = f"books/{book_id}/{image_type}/{relative_name}"
     image_bytes = image_path.read_bytes()
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    storage_path = f"books/{book_id}/{image_type}/{digest}/{relative_name}"
     content_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
     _ensure_response_ok(
         client.storage.from_(IMAGE_BUCKET).upload(

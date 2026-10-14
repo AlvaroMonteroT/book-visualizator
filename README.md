@@ -19,6 +19,22 @@ Then open <http://127.0.0.1:8000>. Upload an `.epub`, enter a character, and
 wait for the portrait and description. Source quotes load when you click
 `Show source quotes`.
 
+The `Saved books` menu lists books you have already uploaded. Choose one to
+reopen its parsed text, character evidence, and glossary without uploading or
+indexing it again. The browser remembers your last book and reopens it on your
+next visit. Books whose index is incomplete resume preparation when opened;
+reopening the same book while it is preparing reuses the current job.
+Older character indexes created before glossary extraction remain usable
+without rebuilding the book.
+
+`Previous results` opens saved portraits, scene images, answers, and source
+quotes. Selecting a previously analyzed character or asking the same question
+returns its saved result without another analysis or image request. New
+characters and questions still need processing. Older local character runs and
+existing Supabase character/answer records also appear in the history. Scene
+results that previously existed only in server memory cannot be recovered
+after that memory was lost.
+
 Once the character index is ready, the character field becomes a list of
 characters found in the book. Selecting a character starts the description and
 portrait workflow immediately.
@@ -182,3 +198,12 @@ locally it defaults to port 8000:
 
 Set the values from `.env.example` in the hosting provider's private
 environment settings. Do not upload `.env` or any service-role key to GitHub.
+
+For a hosted saved library, apply the SQL files in `supabase/migrations/` in
+order, including `004_saved_library.sql`, before deploying this version.
+Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` on the backend. Supabase
+stores the book catalog, paragraphs, index artifacts, images, and full result
+records; the host's `data/` folder is a local cache that can be restored after
+a restart or redeploy. Local use without Supabase stores results under `data/`
+and requires keeping that directory. The library follows the existing shared
+library model; it is not separated into individual user accounts.
