@@ -27,13 +27,13 @@ reopening the same book while it is preparing reuses the current job.
 Older character indexes created before glossary extraction remain usable
 without rebuilding the book.
 
-`Previous results` opens saved portraits, scene images, answers, and source
-quotes. Selecting a previously analyzed character or asking the same question
-returns its saved result without another analysis or image request. New
-characters and questions still need processing. Older local character runs and
-existing Supabase character/answer records also appear in the history. Scene
-results that previously existed only in server memory cannot be recovered
-after that memory was lost.
+`Add a new book` is always available below the saved-book selector, including
+while a saved book is open. Selecting a previously analyzed character opens
+its saved portrait and source quotes automatically, without another analysis
+or image request. Asking the same question also reuses its saved answer. New
+characters and questions still need processing. Older local character runs
+and existing Supabase character/answer records remain reusable. Result history
+is stored in the backend without a separate previous-results menu in the UI.
 
 Once the character index is ready, the character field becomes a list of
 characters found in the book. Selecting a character starts the description and

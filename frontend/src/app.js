@@ -3,8 +3,6 @@ const uploadZone = document.querySelector('#upload-zone');
 const bookStatus = document.querySelector('#book-status');
 const savedBookSelect = document.querySelector('#saved-book-select');
 const libraryStatus = document.querySelector('#library-status');
-const savedResults = document.querySelector('#saved-results');
-const savedResultSelect = document.querySelector('#saved-result-select');
 const characterSelect = document.querySelector('#character-select');
 const characterToolbar = document.querySelector('.character-toolbar');
 const modeSection = document.querySelector('.mode-section');
@@ -133,6 +131,11 @@ function setError(message = '') {
   formError.textContent = message;
 }
 
+function setLibraryStatus(message = '') {
+  libraryStatus.textContent = message;
+  libraryStatus.classList.toggle('hidden', !message);
+}
+
 function setExplorationEnabled(enabled) {
   bookReady = enabled;
   characterMode.disabled = !enabled;
@@ -149,10 +152,10 @@ function renderBookStatus(book, state = 'ready', job = null) {
   const indexing = state === 'indexing';
   const failed = state === 'failed';
   const message = failed
-    ? (job?.message || 'Indexing failed. Replace the book to try again.')
+    ? (job?.message || 'We couldn’t prepare this book. Please try again.')
     : indexing
       ? (job?.message || 'Reading the book and building your character list…')
-      : 'ready · saved index available';
+      : 'Ready to explore';
   const icon = indexing
     ? '<span class="spinner small" aria-hidden="true"></span>'
     : failed
@@ -162,16 +165,18 @@ function renderBookStatus(book, state = 'ready', job = null) {
     ? `<span class="book-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><span class="book-progress-bar" style="width:${progress}%"></span></span><em>${progress}%</em>`
     : '';
   bookStatus.className = `status-card book-status-${state}`;
-  bookStatus.innerHTML = `${icon}<span class="book-status-copy"><strong>${escapeHtml(book.title)}</strong><small>${escapeHtml(book.filename)} · ${escapeHtml(message)}</small>${progressMarkup}</span><button id="replace-book" class="text-button" type="button">Replace</button>`;
+  const statusCopy = indexing || failed
+    ? `<strong>${escapeHtml(book.title)}</strong><small>${escapeHtml(message)}</small>`
+    : `<strong>${escapeHtml(message)}</strong>`;
+  bookStatus.innerHTML = `${icon}<span class="book-status-copy">${statusCopy}${progressMarkup}</span>${failed ? '<button id="retry-book" class="text-button" type="button">Try again</button>' : ''}`;
   show(bookStatus);
-  hide(uploadZone);
-  document.querySelector('#replace-book').addEventListener('click', () => bookInput.click());
+  if (failed) document.querySelector('#retry-book').addEventListener('click', () => openSavedBook(book.book_id));
 }
 
 function setBookStatus(book) {
   const indexing = Boolean(book.index_job_id);
-  bookStepTitle.textContent = indexing ? 'Preparing your book…' : 'Your book is ready';
-  bookStepCopy.textContent = indexing ? 'We’re reading it and building your character list.' : 'You can change it anytime.';
+  bookStepTitle.textContent = 'Your book';
+  bookStepCopy.textContent = 'Switch books or add a new one.';
   modeChosen = false;
   show(modeSection);
   setExplorationEnabled(!indexing);
@@ -183,7 +188,6 @@ function setBookStatus(book) {
   }
   if (book.index_job_id) pollIndexJob(book.index_job_id);
   else loadCharacterOptions();
-  loadSavedResults();
   savedBookSelect.value = book.book_id;
   try { window.localStorage.setItem('book-visualizator:last-book', book.book_id); } catch {}
 }
@@ -196,8 +200,6 @@ async function pollIndexJob(jobId, version = bookSelectionVersion) {
     if (!response.ok) throw new Error(job.detail || 'The indexing status could not be loaded.');
     if (job.status === 'completed') {
       bookReady = true;
-      bookStepTitle.textContent = 'Your book is ready';
-      bookStepCopy.textContent = 'You can change it anytime.';
       setExplorationEnabled(true);
       renderBookStatus(selectedBook, 'ready', job);
       setMode(activeMode);
@@ -205,8 +207,6 @@ async function pollIndexJob(jobId, version = bookSelectionVersion) {
       return;
     }
     if (job.status === 'failed') {
-      bookStepTitle.textContent = 'We couldn’t finish preparing your book';
-      bookStepCopy.textContent = 'You can replace it and try again.';
       setExplorationEnabled(false);
       renderBookStatus(selectedBook, 'failed', job);
       return;
@@ -239,7 +239,7 @@ async function loadLibrary() {
     `<option value="${escapeHtml(book.book_id)}">${escapeHtml(book.title)}${book.status === 'ready' ? ' · Ready' : ' · Preparation needed'}</option>`).join('');
   savedBookSelect.disabled = false;
   if (selectedBook) savedBookSelect.value = selectedBook.book_id;
-  libraryStatus.textContent = data.books.length ? 'Saved books reopen with their previous results.' : 'Your uploaded books will appear here.';
+  setLibraryStatus(data.books.length ? '' : 'No saved books yet. Add your first EPUB below.');
   return data.books;
 }
 
@@ -248,51 +248,42 @@ function beginBookSelection() {
   resultSelectionVersion += 1;
   setExplorationEnabled(false);
   characterSelect.innerHTML = '<option value="">Choose a character</option>';
-  hide(savedResults);
+  setLibraryStatus();
+  hide(bookStatus);
   hide(modeSection);
+  hide(characterToolbar);
+  hide(document.querySelector('.scene-toolbar'));
+  hide(questionToolbar);
   hide(resultCard);
   hide(questionResult);
   hide(processingState);
   show(emptyState);
   show(uploadZone);
   savedBookSelect.disabled = true;
+  uploadZone.disabled = true;
+  bookInput.disabled = true;
 }
 
 async function openSavedBook(bookId) {
   setError('');
   beginBookSelection();
-  libraryStatus.textContent = 'Opening your saved book…';
+  setLibraryStatus('Opening your book…');
   try {
     const response = await fetch(`/api/books/${encodeURIComponent(bookId)}/open`, { method: 'POST' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'The saved book could not be opened.');
     selectedBook = data;
     setBookStatus(data);
-    libraryStatus.textContent = 'Loaded from your saved library.';
+    setLibraryStatus();
   } catch (error) {
     selectedBook = null;
     hide(bookStatus);
     show(uploadZone);
     setMode(activeMode);
     savedBookSelect.value = '';
-    libraryStatus.textContent = 'Choose a saved book to try again.';
+    setLibraryStatus('Choose a saved book to try again.');
     setError(error.message);
-  } finally { savedBookSelect.disabled = false; }
-}
-
-async function loadSavedResults() {
-  const version = bookSelectionVersion;
-  try {
-    const response = await fetch(`/api/books/${selectedBook.book_id}/results`);
-    const data = await response.json();
-    if (version !== bookSelectionVersion) return;
-    if (!response.ok) throw new Error(data.detail || 'Saved results could not be loaded.');
-    const previousSelection = savedResultSelect.value;
-    savedResultSelect.innerHTML = '<option value="">Choose a saved result</option>' + data.results.map((result) =>
-      `<option value="${escapeHtml(result.result_id)}" data-mode="${escapeHtml(result.result_type)}">${escapeHtml(result.label)}</option>`).join('');
-    savedResultSelect.value = previousSelection;
-    savedResults.classList.toggle('hidden', !data.results.length);
-  } catch (error) { if (version === bookSelectionVersion) setError(error.message); }
+  } finally { savedBookSelect.disabled = false; uploadZone.disabled = false; bookInput.disabled = false; }
 }
 
 async function initializeLibrary() {
@@ -305,7 +296,7 @@ async function initializeLibrary() {
     }
   } catch (error) {
     savedBookSelect.innerHTML = '<option value="">Saved library unavailable</option>';
-    libraryStatus.textContent = error.message;
+    setLibraryStatus(error.message);
   }
 }
 
@@ -327,7 +318,7 @@ async function uploadBook(file) {
     if (!response.ok) throw new Error(data.detail || 'The book could not be uploaded.');
     selectedBook = data;
     setBookStatus(data);
-    await loadLibrary();
+    try { await loadLibrary(); } catch (error) { setLibraryStatus(error.message); }
   } catch (error) {
     selectedBook = null;
     setMode(activeMode);
@@ -338,7 +329,7 @@ async function uploadBook(file) {
     } else {
       setError(error.message || 'The book could not be uploaded.');
     }
-  } finally { savedBookSelect.disabled = false; bookInput.value = ''; }
+  } finally { savedBookSelect.disabled = false; uploadZone.disabled = false; bookInput.disabled = false; bookInput.value = ''; }
 }
 
 async function uploadScene(file) {
@@ -402,7 +393,7 @@ async function analyzeCharacter() {
   const version = bookSelectionVersion;
   const resultVersion = ++resultSelectionVersion;
   hide(emptyState); hide(resultCard); show(processingState);
-  processingTitle.textContent = `Finding ${character}…`;
+  processingTitle.textContent = `Opening ${character}…`;
   progressBar.style.width = '5%';
   try {
     const response = await fetch(`/api/books/${selectedBook.book_id}/characters`, {
@@ -454,7 +445,6 @@ async function loadSceneResult(resultId) {
   show(characterImage);
   sceneStatus.innerHTML = '<span class="check">✓</span><span>Passage found and visualized.</span>';
   show(sceneStatus);
-  loadSavedResults();
 }
 
 async function loadQuestionResult(resultId) {
@@ -471,7 +461,6 @@ async function loadQuestionResult(resultId) {
   questionCitations.innerHTML = result.citations?.length
     ? `<strong>Book references</strong><br>${result.citations.map((citation) => `Chapter ${citation.chapter_number}, paragraph ${citation.paragraph_number}${citation.reason ? ` — ${escapeHtml(citation.reason)}` : ''}`).join('<br>')}`
     : '<span>No exact supporting references were returned.</span>';
-  loadSavedResults();
 }
 
 async function loadResult(resultId) {
@@ -506,7 +495,6 @@ async function loadResult(resultId) {
   quotesButton.textContent = 'Show source quotes';
   quotesPanel.innerHTML = '';
   hide(quotesPanel);
-  loadSavedResults();
 }
 
 quotesButton.addEventListener('click', async () => {
@@ -520,17 +508,8 @@ quotesButton.addEventListener('click', async () => {
 });
 
 bookInput.addEventListener('change', () => { if (bookInput.files[0]) uploadBook(bookInput.files[0]); });
+uploadZone.addEventListener('click', () => bookInput.click());
 savedBookSelect.addEventListener('change', () => { if (savedBookSelect.value) openSavedBook(savedBookSelect.value); });
-savedResultSelect.addEventListener('change', async () => {
-  if (!savedResultSelect.value) return;
-  const resultId = savedResultSelect.value;
-  const mode = savedResultSelect.selectedOptions[0].dataset.mode;
-  resultSelectionVersion += 1;
-  modeChosen = true;
-  setMode(mode);
-  setError('');
-  try { await loadResult(resultId); } catch (error) { setError(error.message); }
-});
 ['dragenter', 'dragover'].forEach((eventName) => uploadZone.addEventListener(eventName, (event) => { event.preventDefault(); uploadZone.classList.add('dragging'); }));
 ['dragleave', 'drop'].forEach((eventName) => uploadZone.addEventListener(eventName, (event) => { event.preventDefault(); uploadZone.classList.remove('dragging'); }));
 uploadZone.addEventListener('drop', (event) => { if (event.dataTransfer.files[0]) uploadBook(event.dataTransfer.files[0]); });

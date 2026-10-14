@@ -215,9 +215,14 @@ def _saved_results(book_id: str) -> list[dict[str, Any]]:
 
 def _cached_result(book_id: str, result_type: str, field: str, value: str) -> dict[str, Any] | None:
     normalized = " ".join(value.split()).casefold()
-    return next((record for record in _saved_results(book_id)
-                 if record.get("result_type", "character") == result_type
-                 and " ".join(str(record.get(field, "")).split()).casefold() == normalized), None)
+    matches = [record for record in _saved_results(book_id)
+               if record.get("result_type", "character") == result_type
+               and " ".join(str(record.get(field, "")).split()).casefold() == normalized]
+    if result_type == "character":
+        portrait = next((record for record in matches if record.get("image_url")), None)
+        if portrait:
+            return portrait
+    return matches[0] if matches else None
 
 
 def _completed_cached_job(book_id: str, job_type: str, record: dict[str, Any]) -> dict[str, str]:

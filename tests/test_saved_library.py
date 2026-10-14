@@ -73,6 +73,24 @@ class SavedLibraryTests(unittest.TestCase):
         self.assertEqual(job["status"], "completed")
         main.executor.submit.assert_not_called()
 
+    def test_character_selection_prefers_saved_portrait_over_newer_text_only_run(self) -> None:
+        for record in (
+            {"result_id": "saved-portrait", "book_id": self.book_id, "character": "Alice",
+             "created_at": "2026-10-01", "description": {"physical_description": "Tall"},
+             "image_url": "/media/alice.png", "quotes": []},
+            {"result_id": "newer-text", "book_id": self.book_id, "character": "Alice",
+             "created_at": "2026-10-14", "description": {"physical_description": "Tall"},
+             "image_url": None, "quotes": []}
+        ):
+            main._save_result(record)
+        main.results.clear()
+        response = self.client.post(f"/api/books/{self.book_id}/characters", json={"character": "Alice"})
+        job = self.client.get(f'/api/jobs/{response.json()["job_id"]}').json()
+        result = self.client.get(f'/api/results/{job["result_id"]}').json()
+        self.assertEqual(result["image_url"], "/media/alice.png")
+        self.assertEqual(result["result_id"], "saved-portrait")
+        main.executor.submit.assert_not_called()
+
     def test_answers_and_scenes_are_in_saved_history_after_restart(self) -> None:
         for record in (
             {"result_id": "answer-123", "book_id": self.book_id, "result_type": "question",

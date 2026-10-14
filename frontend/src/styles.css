@@ -40,11 +40,16 @@ h1 { margin-bottom: 0; color: #182b2d; font-family: Georgia, serif; font-size: c
 .question-submit { width: 100%; margin-top: 7px; padding: 9px 12px; border: 0; border-radius: 9px; color: #fffaf0; background: #1f4b50; font-size: 12px; font-weight: 750; }
 .question-submit:disabled { opacity: .45; cursor: not-allowed; }
 .book-toolbar { min-height: 38px; }
-.book-library { margin-bottom: 12px; }
+.book-library { margin-bottom: 0; }
 .library-status { margin: 6px 0 0; color: #6e7c78; font-size: 12px; line-height: 1.4; }
-.saved-results { margin-top: 16px; }
-.upload-button { display: inline-flex; align-items: center; gap: 6px; padding: 9px 12px; border: 1px solid #c8d4cb; border-radius: 10px; color: #1f4b50; background: #edf4ee; cursor: pointer; font-size: 13px; font-weight: 750; white-space: nowrap; }
+.book-choice-divider { display: flex; align-items: center; gap: 10px; margin: 12px 0; color: #7d8881; font-size: 12px; }
+.book-choice-divider::before, .book-choice-divider::after { content: ''; height: 1px; flex: 1; background: #dedbd2; }
+.upload-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px dashed #b6c7bd; border-radius: 10px; color: #1f4b50; background: #edf4ee; cursor: pointer; font-size: 13px; font-weight: 750; }
 .upload-button:hover { border-color: #1f4b50; background: #e3eee6; }
+.upload-button:focus-visible { outline: 3px solid rgba(31,75,80,.25); outline-offset: 2px; }
+.upload-button:disabled { cursor: wait; opacity: .6; }
+.upload-button.dragging { border-color: #1f4b50; background: #e3eee6; }
+.upload-button small { margin-left: auto; font-size: 10px; font-weight: 600; letter-spacing: .06em; color: #6e7c78; }
 .upload-button > span { color: #b08263; font-size: 18px; line-height: 1; }
 #book-input { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
@@ -66,6 +71,10 @@ h1 { margin-bottom: 0; color: #182b2d; font-family: Georgia, serif; font-size: c
 .mode-button:disabled { cursor: not-allowed; opacity: .45; }
 .status-card small { display: block; margin-top: 3px; color: #6c7e76; font-size: 11px; }
 .book-status-copy { flex: 1; min-width: 0; }
+.book-library .status-card { margin-top: 9px; padding: 10px 11px; font-size: 12px; }
+.book-library .book-status-ready { margin-top: 8px; padding: 0; background: none; font-size: 12px; }
+.book-status-ready .check { width: 18px; height: 18px; flex: 0 0 18px; font-size: 11px; }
+.book-status-ready strong { font-weight: 500; }
 .book-status-indexing { align-items: flex-start; }
 .book-status-failed { color: #8f4438; background: #f8e8e3; }
 .status-icon.error { display: grid; place-items: center; width: 22px; height: 22px; flex: 0 0 22px; border-radius: 50%; color: #fff; background: #b45b4b; font-weight: 800; }
